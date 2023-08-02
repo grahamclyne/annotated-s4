@@ -14,8 +14,10 @@ from .data import Datasets
 from .dss import DSSLayer
 from .s4 import BatchStackedModel, S4Layer, SSMLayer, sample_image_prefix
 from .s4d import S4DLayer
+from .vit import VisionTransformer
 
-
+# ifyou want to trace nans, jax doesnt raise errors for problems that cause nans (usually)
+#JAX_DEBUG_NANS=True
 try:
     # Slightly nonstandard import name to make config easier - see example_train()
     import wandb
@@ -40,10 +42,22 @@ def cross_entropy_loss(logits, label):
     return -np.sum(one_hot_label * logits)
 
 
-@partial(np.vectorize, signature="(c),()->()")
-def compute_accuracy(logits, label):
-    return np.argmax(logits) == label
+# @partial(np.vectorize, signature="(c,r),(c,r)->()")
+def compute_accuracy(a, b):
+    # a = a - np.mean(a)
+    # b = b - np.mean(b)
+    # out = np.dot(a, b.T) / np.sqrt(np.dot(a.T, a) * np.dot(b.T, b)) 
+    # print(a.shape)
+    # print(b.shape)
+    # return out
+    return np.mean(np.corrcoef(a,b),axis=(0,1))
 
+@partial(np.vectorize)
+def mse(logits,label):
+    print('logits',logits.shape)
+    print(label.shape)
+    err = logits - label
+    return np.mean(np.square(err))
 
 # As we're using Flax, we also write a utility function to return a default TrainState object.
 # This function initializes model parameters, as well as our optimizer. Note that for S4 models,
@@ -159,6 +173,7 @@ def train_epoch(state, rng, model, trainloader, classification=False):
     for batch_idx, (inputs, labels) in enumerate(tqdm(trainloader)):
         inputs = np.array(inputs.numpy())
         labels = np.array(labels.numpy())  # Not the most efficient...
+        print('labels',labels.shape)
         rng, drop_rng = jax.random.split(rng)
         state, loss, acc = train_step(
             state,
@@ -231,12 +246,16 @@ def train_step(
             rngs={"dropout": rng},
             mutable=["intermediates"],
         )
-        loss = np.mean(cross_entropy_loss(logits, batch_labels))
+
+        print(logits.shape)
+        print(batch_labels.shape)
+        # logits = logits[:,]
+        loss = np.mean(mse(logits, batch_labels))
         acc = np.mean(compute_accuracy(logits, batch_labels))
         return loss, (logits, acc)
 
-    if not classification:
-        batch_labels = batch_inputs[:, :, 0]
+    # if not classification:
+    #     batch_labels = batch_inputs[:, :, 0]
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (loss, (logits, acc)), grads = grad_fn(state.params)
@@ -246,10 +265,11 @@ def train_step(
 
 @partial(jax.jit, static_argnums=(3, 4))
 def eval_step(batch_inputs, batch_labels, params, model, classification=False):
-    if not classification:
-        batch_labels = batch_inputs[:, :, 0]
+    # if not classification:
+    #     batch_labels = batch_inputs[:, :, 0]
     logits = model.apply({"params": params}, batch_inputs)
-    loss = np.mean(cross_entropy_loss(logits, batch_labels))
+    # logits=logits[:,0]
+    loss = np.mean(mse(logits, batch_labels))
     acc = np.mean(compute_accuracy(logits, batch_labels))
     return loss, acc
 
@@ -292,6 +312,7 @@ Models = {
     "s4": S4Layer,
     "dss": DSSLayer,
     "s4d": S4DLayer,
+    "vit": VisionTransformer
 }
 
 
@@ -320,7 +341,6 @@ def example_train(
     trainloader, testloader, n_classes, l_max, d_input = create_dataset_fn(
         bsz=train.bsz
     )
-
     # Get model class and arguments
     layer_cls = Models[layer]
     model.layer.l_max = l_max
@@ -337,7 +357,8 @@ def example_train(
         classification=classification,
         **model,
     )
-
+    if layer == 'vit':
+        model_cls = VisionTransformer
     state = create_train_state(
         rng,
         model_cls,

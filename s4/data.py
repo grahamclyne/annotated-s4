@@ -6,9 +6,10 @@ import torchtext
 import torchvision
 import torchvision.transforms as transforms
 from datasets import DatasetDict, load_dataset
-from torch.utils.data import TensorDataset, random_split
+from torch.utils.data import TensorDataset, random_split,Dataset
 from tqdm import tqdm
-
+import xarray as xr
+import xbatcher
 
 # ### $sin(x)$
 # **Task**: Overfit to a 8-bit quantized sin(x) from 0 - 2*Pi -- sampled 360 times.
@@ -138,6 +139,156 @@ def create_mnist_dataset(bsz=128):
     )
     testloader = torch.utils.data.DataLoader(
         test,
+        batch_size=bsz,
+        shuffle=False,
+    )
+
+    return trainloader, testloader, N_CLASSES, SEQ_LENGTH, IN_DIM
+
+# ### NORESM2 sequence modeling
+# 
+#
+def create_noresm2_dataset(bsz=128):
+    print("[*] Generating NORESM2 Sequence Modeling Dataset...")
+
+    # Constants
+    SEQ_LENGTH, N_CLASSES, IN_DIM = 50, 4, 1
+
+    len_historical = 165
+    simus = ['ssp126',
+            'ssp370',
+            'ssp585',
+            'hist-GHG',
+            'hist-aer']
+    data_path = '/Users/grahamclyne/ClimateBench/data/'
+    X_train = []
+    Y_train = []
+
+    for i, simu in enumerate(simus):
+
+        input_name = 'inputs_' + simu + '.nc'
+        output_name = 'outputs_' + simu + '.nc'
+
+        # Just load hist data in these cases 'hist-GHG' and 'hist-aer'
+        if 'hist' in simu:
+            # load inputs 
+            input_xr = xr.open_dataset(data_path + input_name)
+                
+            # load outputs                                                             
+            output_xr = xr.open_dataset(data_path + output_name).mean(dim='member')
+            output_xr = output_xr.assign({"pr": output_xr.pr * 86400,
+                                        "pr90": output_xr.pr90 * 86400}).rename({'lon':'longitude', 
+                                                                                'lat': 'latitude'}).transpose('time','latitude', 'longitude').drop(['quantile'])
+        
+        # Concatenate with historical data in the case of scenario 'ssp126', 'ssp370' and 'ssp585'
+        else:
+            # load inputs 
+            input_xr = xr.open_mfdataset([data_path + 'inputs_historical.nc', 
+                                        data_path + input_name]).compute()
+                
+            # load outputs                                                             
+            output_xr = xr.concat([xr.open_dataset(data_path + 'outputs_historical.nc').mean(dim='member'),
+                                xr.open_dataset(data_path + output_name).mean(dim='member')],
+                                dim='time').compute()
+            output_xr = output_xr.assign({"pr": output_xr.pr * 86400,
+                                        "pr90": output_xr.pr90 * 86400}).rename({'lon':'longitude', 
+                                                                                'lat': 'latitude'}).transpose('time','latitude', 'longitude').drop(['quantile'])
+
+        print(input_xr.dims, simu)
+
+        # Append to list 
+        X_train.append(input_xr)
+        Y_train.append(output_xr)
+
+    # Utilities for normalizing the input data
+    def normalize(data, var, meanstd_dict):
+        mean = meanstd_dict[var][0]
+        std = meanstd_dict[var][1]
+        return (data - mean)/std
+
+    def unnormalize(data, var, meanstd_dict):
+        mean = meanstd_dict[var][0]
+        std = meanstd_dict[var][1]
+        return data * std + mean
+
+    # Compute mean/std of each variable for the whole dataset
+    meanstd_inputs = {}
+
+    for var in ['CO2', 'CH4', 'SO2', 'BC']:
+        # To not take the historical data into account several time we have to slice the scenario datasets
+        # and only keep the historical data once (in the first ssp index 0 in the simus list)
+        array = np.concatenate([X_train[i][var].data for i in [0, 3]] + 
+                            [X_train[i][var].sel(time=slice(len_historical, None)).data for i in range(1, 3)])
+        print((array.mean(), array.std()))
+        meanstd_inputs[var] = (array.mean(), array.std())
+
+    # normalize input data 
+    X_train_norm = [] 
+    for i, train_xr in enumerate(X_train): 
+        for var in ['CO2', 'CH4', 'SO2', 'BC']: 
+            var_dims = train_xr[var].dims
+            train_xr=train_xr.assign({var: (var_dims, normalize(train_xr[var].data, var, meanstd_inputs))}) 
+        X_train_norm.append(train_xr)
+
+    X_test = xr.open_mfdataset([data_path + 'inputs_historical.nc',
+                            data_path + 'inputs_ssp245.nc']).compute()
+    Y_test = xr.open_mfdataset([data_path + 'outputs_historical.nc',
+                            data_path + 'outputs_ssp245.nc']).compute().mean(dim='member')
+    Y_test = Y_test.assign({"pr": Y_test.pr * 86400,
+                                        "pr90": Y_test.pr90 * 86400}).rename({'lon':'longitude', 
+                                                                                'lat': 'latitude'}).transpose('time','latitude', 'longitude').drop(['quantile'])
+
+    X_test_norm = []
+    # Normalize data 
+    print(X_test)
+    for var in ['CO2', 'CH4', 'SO2', 'BC']: 
+        var_dims = X_test[var].dims
+        X_test = X_test.assign({var: (var_dims, normalize(X_test[var].data, var, meanstd_inputs))}) 
+    X_test_norm = X_test
+    print(len(Y_train))
+    print(len(Y_test))
+    for i in range(0,3):
+        train_merge = xr.merge([Y_train[i],X_train_norm[i]])
+        test_merge = xr.merge([Y_test,X_test_norm])
+
+    class XArrayDataset(Dataset):
+        def __init__(self, data):
+            self.data = data
+
+        def __len__(self):
+            return len(self.data)
+
+        def __getitem__(self, idx):
+            X = self.data[idx][['CO2','SO2','CH4','BC']]
+            y = self.data[idx][['tas', 'diurnal_temperature_range', 'pr', 'pr90']]
+            return X.to_array().to_numpy().squeeze().T,np.mean(y.to_array(),axis=(1,2,3)).to_numpy()
+
+    n_timepoint_in_each_sample = 1
+    input_overlap = 1-1
+
+    train_bgen = xbatcher.BatchGenerator(
+        ds=train_merge,
+        #set to 1 if only want one grid cell
+        # input_dims={"time": n_timepoint_in_each_sample,'latitude':1,'longitude':1},
+        input_dims={'time': n_timepoint_in_each_sample,'longitude': 144, 'latitude': 96},
+        input_overlap={"time": input_overlap},
+    )
+    test_bgen = xbatcher.BatchGenerator(
+        ds=test_merge,
+        # input_dims={"time": n_timepoint_in_each_sample,'latitude':1,'longitude':1},
+        input_dims={'time':n_timepoint_in_each_sample,'longitude': 144, 'latitude': 96},
+        input_overlap={"time": 0},
+    )
+    train_ds = XArrayDataset(train_bgen)
+    test_ds = XArrayDataset(test_bgen)
+
+    trainloader = torch.utils.data.DataLoader(
+        train_ds,
+        batch_size=bsz,
+        shuffle=True,
+    )
+    testloader = torch.utils.data.DataLoader(
+        test_ds,
         batch_size=bsz,
         shuffle=False,
     )
@@ -671,4 +822,5 @@ Datasets = {
     "cifar-classification": create_cifar_classification_dataset,
     "imdb-classification": create_imdb_classification_dataset,
     "listops-classification": create_listops_classification_dataset,
+    "noresm": create_noresm2_dataset
 }
