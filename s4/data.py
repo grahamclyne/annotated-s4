@@ -160,7 +160,7 @@ def create_noresm2_dataset(bsz=128):
             'ssp585',
             'hist-GHG',
             'hist-aer']
-    data_path = '/Users/grahamclyne/ClimateBench/data/'
+    data_path = '/Users/gclyne/ClimateBench/data/'
     X_train = []
     Y_train = []
 
@@ -194,7 +194,7 @@ def create_noresm2_dataset(bsz=128):
                                         "pr90": output_xr.pr90 * 86400}).rename({'lon':'longitude', 
                                                                                 'lat': 'latitude'}).transpose('time','latitude', 'longitude').drop(['quantile'])
 
-        print(input_xr.dims, simu)
+        # print(input_xr.dims, simu)
 
         # Append to list 
         X_train.append(input_xr)
@@ -219,7 +219,7 @@ def create_noresm2_dataset(bsz=128):
         # and only keep the historical data once (in the first ssp index 0 in the simus list)
         array = np.concatenate([X_train[i][var].data for i in [0, 3]] + 
                             [X_train[i][var].sel(time=slice(len_historical, None)).data for i in range(1, 3)])
-        print((array.mean(), array.std()))
+        # print((array.mean(), array.std()))
         meanstd_inputs[var] = (array.mean(), array.std())
 
     # normalize input data 
@@ -240,13 +240,10 @@ def create_noresm2_dataset(bsz=128):
 
     X_test_norm = []
     # Normalize data 
-    print(X_test)
     for var in ['CO2', 'CH4', 'SO2', 'BC']: 
         var_dims = X_test[var].dims
         X_test = X_test.assign({var: (var_dims, normalize(X_test[var].data, var, meanstd_inputs))}) 
     X_test_norm = X_test
-    print(len(Y_train))
-    print(len(Y_test))
     for i in range(0,3):
         train_merge = xr.merge([Y_train[i],X_train_norm[i]])
         test_merge = xr.merge([Y_test,X_test_norm])
@@ -261,7 +258,7 @@ def create_noresm2_dataset(bsz=128):
         def __getitem__(self, idx):
             X = self.data[idx][['CO2','SO2','CH4','BC']]
             y = self.data[idx][['tas', 'diurnal_temperature_range', 'pr', 'pr90']]
-            return X.to_array().to_numpy().squeeze().T,np.mean(y.to_array(),axis=(1,2,3)).to_numpy()
+            return X.to_array().to_numpy().squeeze().T,y.to_array().to_numpy().squeeze()
 
     n_timepoint_in_each_sample = 1
     input_overlap = 1-1
@@ -271,14 +268,18 @@ def create_noresm2_dataset(bsz=128):
         #set to 1 if only want one grid cell
         # input_dims={"time": n_timepoint_in_each_sample,'latitude':1,'longitude':1},
         input_dims={'time': n_timepoint_in_each_sample,'longitude': 144, 'latitude': 96},
-        input_overlap={"time": input_overlap},
+        # input_dims={'time':1},
+        # input_overlap={"time": input_overlap},
     )
     test_bgen = xbatcher.BatchGenerator(
         ds=test_merge,
         # input_dims={"time": n_timepoint_in_each_sample,'latitude':1,'longitude':1},
         input_dims={'time':n_timepoint_in_each_sample,'longitude': 144, 'latitude': 96},
-        input_overlap={"time": 0},
+        # input_dims={'time':1},
+        # input_overlap={"time": 0},
     )
+    # print(train_merge)
+    # print(train_bgen)
     train_ds = XArrayDataset(train_bgen)
     test_ds = XArrayDataset(test_bgen)
 

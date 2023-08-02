@@ -8,6 +8,12 @@
 
 ## Experiments
 
+
+
+### VIT noresm 
+
+
+python -m s4.train dataset=noresm layer=vit train.epochs=10 train.bsz=64 
 #### MNIST Sequence Modeling
 
 ```bash
@@ -18,6 +24,8 @@ The following command uses a larger model (5M params) and logs generated samples
 ```bash
 python -m s4.train dataset=mnist layer=s4 train.epochs=100 train.bsz=50 train.lr=5e-3 train.lr_schedule=true model.d_model=512 model.n_layers=6 model.dropout=0.0 train.weight_decay=0.05 model.prenorm=true model.embedding=true wandb.mode=online train.sample=308 
 ```
+
+
 
 #### QuickDraw Sequence Modeling
 

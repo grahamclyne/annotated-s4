@@ -12,8 +12,10 @@ def img_to_patch(x, patch_size, flatten_channels=True):
         flatten_channels - If True, the patches will be returned in a flattened format
                            as a feature vector instead of a image grid.
     """
+    print(x.shape)
     B, H, W, C = x.shape
     x = x.reshape(B, H//patch_size, patch_size, W//patch_size, patch_size, C)
+    print(x.shape)
     x = x.transpose(0, 1, 3, 2, 4, 5)    # [B, H', W', p_H, p_W, C]
     x = x.reshape(B, -1, *x.shape[3:])   # [B, H'*W', p_H, p_W, C]
     if flatten_channels:
@@ -50,15 +52,16 @@ class AttentionBlock(nn.Module):
         return x
 
 class VisionTransformer(nn.Module):
-    embed_dim : int = 10   # Dimensionality of input and attention feature vectors
-    hidden_dim : int = 16   # Dimensionality of hidden layer in feed-forward network
-    num_heads : int = 2   # Number of heads to use in the Multi-Head Attention block
+    embed_dim : int = 256   # Dimensionality of input and attention feature vectors
+    hidden_dim : int = 256   # Dimensionality of hidden layer in feed-forward network
+    num_heads : int = 4   # Number of heads to use in the Multi-Head Attention block
     num_channels : int = 4  # Number of channels of the input (3 for RGB)
-    num_layers : int = 2   # Number of layers to use in the Transformer
+    num_layers : int = 4   # Number of layers to use in the Transformer
     num_classes : int = 4 # Number of classes to predict
-    patch_size : int = 16   # Number of pixels that the patches have per dimension
-    num_patches : int = 53    # Maximum number of patches an image can have
+    patch_size : int = 8   # Number of pixels that the patches have per dimension
+    num_patches : int = 215    # Maximum number of patches an image can have
     dropout_prob : float = 0.0  # Amount of dropout to apply in the feed-forward network
+    img_size = [144,96]
     training: bool = True #TODO
 
     def setup(self):
@@ -70,7 +73,7 @@ class VisionTransformer(nn.Module):
                                            self.dropout_prob) for _ in range(self.num_layers)]
         self.mlp_head = nn.Sequential([
             nn.LayerNorm(),
-            nn.Dense(self.num_classes)
+            nn.Dense(self.num_classes * self.patch_size**2)
         ])
         self.dropout = nn.Dropout(self.dropout_prob)
 
@@ -85,7 +88,6 @@ class VisionTransformer(nn.Module):
 
     def __call__(self, x, train=True):
         # Preprocess input
-        print(x.shape)
         x = img_to_patch(x, self.patch_size)
         B, T, _ = x.shape
         x = self.input_layer(x)
@@ -99,10 +101,9 @@ class VisionTransformer(nn.Module):
         x = self.dropout(x, deterministic=not train)
         for attn_block in self.transformer:
             x = attn_block(x, train=train)
-
+        print('after attn_block',x.shape)
         # Perform classification prediction
-        cls = x[:,0]
-        print('cls',cls.shape)
-        out = self.mlp_head(cls)
-        print('out',out.shape)
+        out = self.mlp_head(x)
+        out = out.reshape(-1, self.num_classes,self.img_size[1],self.img_size[0])
+        print('after out',out.shape)
         return out

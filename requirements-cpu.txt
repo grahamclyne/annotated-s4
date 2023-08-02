@@ -23,3 +23,6 @@ datasets
 tqdm
 hydra-core
 omegaconf
+xarray 
+xbatcher
+netcdf4

@@ -15,6 +15,8 @@ from .dss import DSSLayer
 from .s4 import BatchStackedModel, S4Layer, SSMLayer, sample_image_prefix
 from .s4d import S4DLayer
 from .vit import VisionTransformer
+import orbax.checkpoint
+from flax.training import orbax_utils
 
 # ifyou want to trace nans, jax doesnt raise errors for problems that cause nans (usually)
 #JAX_DEBUG_NANS=True
@@ -47,15 +49,14 @@ def compute_accuracy(a, b):
     # a = a - np.mean(a)
     # b = b - np.mean(b)
     # out = np.dot(a, b.T) / np.sqrt(np.dot(a.T, a) * np.dot(b.T, b)) 
-    # print(a.shape)
-    # print(b.shape)
+
     # return out
+    a = a.flatten()
+    b = b.flatten()
     return np.mean(np.corrcoef(a,b),axis=(0,1))
 
 @partial(np.vectorize)
 def mse(logits,label):
-    print('logits',logits.shape)
-    print(label.shape)
     err = logits - label
     return np.mean(np.square(err))
 
@@ -91,7 +92,8 @@ def create_train_state(
         np.array(next(iter(trainloader))[0].numpy()),
     )
     # Note: Added immediate `unfreeze()` to play well w/ Optax. See below!
-    params = params["params"].unfreeze()
+    # params = params["params"].unfreeze()
+    params = params['params']
 
     # Handle learning rates:
     # - LR scheduler
@@ -201,6 +203,7 @@ def validate(params, model, testloader, classification=False):
     for batch_idx, (inputs, labels) in enumerate(tqdm(testloader)):
         inputs = np.array(inputs.numpy())
         labels = np.array(labels.numpy())  # Not the most efficient...
+ 
         loss, acc = eval_step(
             inputs, labels, params, model, classification=classification
         )
@@ -247,10 +250,9 @@ def train_step(
             mutable=["intermediates"],
         )
 
-        print(logits.shape)
-        print(batch_labels.shape)
         # logits = logits[:,]
         loss = np.mean(mse(logits, batch_labels))
+        # jax.debug.print('{loss}',loss=loss)
         acc = np.mean(compute_accuracy(logits, batch_labels))
         return loss, (logits, acc)
 
@@ -395,57 +397,57 @@ def example_train(
         )
 
         # Save a checkpoint each epoch & handle best (test loss... not "copacetic" but ehh)
-        if train.checkpoint:
-            suf = f"-{train.suffix}" if train.suffix is not None else ""
-            run_id = f"checkpoints/{dataset}/{layer}-d_model={model.d_model}-lr={train.lr}-bsz={train.bsz}{suf}"
-            ckpt_path = checkpoints.save_checkpoint(
-                run_id,
-                state,
-                epoch,
-                keep=train.epochs,
-            )
+        # if train.checkpoint:
+        #     suf = f"-{train.suffix}" if train.suffix is not None else ""
+        #     run_id = f"checkpoints/{dataset}/{layer}-d_model={model.d_model}-lr={train.lr}-bsz={train.bsz}{suf}"
+        #     ckpt_path = checkpoints.save_checkpoint(
+        #         run_id,
+        #         state,
+        #         epoch,
+        #         keep=train.epochs,
+        #     )
 
-        if train.sample is not None:
-            if dataset == "mnist":  # Should work for QuickDraw too but untested
-                sample_fn = partial(
-                    sample_image_prefix, imshape=(28, 28)
-                )  # params=state["params"], length=784, bsz=64, prefix=train.sample)
-            else:
-                raise NotImplementedError(
-                    "Sampling currently only supported for MNIST"
-                )
+        # if train.sample is not None:
+        #     if dataset == "mnist":  # Should work for QuickDraw too but untested
+        #         sample_fn = partial(
+        #             sample_image_prefix, imshape=(28, 28)
+        #         )  # params=state["params"], length=784, bsz=64, prefix=train.sample)
+        #     else:
+        #         raise NotImplementedError(
+        #             "Sampling currently only supported for MNIST"
+        #         )
 
-            # model_cls = partial(
-            #     BatchStackedModel,
-            #     layer_cls=layer_cls,
-            #     d_output=n_classes,
-            #     classification=classification,
-            #     **model,
-            # )
-            samples, examples = sample_fn(
-                # run_id,
-                params=state.params,
-                model=model_cls(decode=True, training=False),
-                rng=rng,
-                dataloader=testloader,
-                prefix=train.sample,
-                n_batches=1,
-                save=False,
-            )
-            if wandb is not None:
-                samples = [wandb.Image(sample) for sample in samples]
-                wandb.log({"samples": samples}, commit=False)
-                examples = [wandb.Image(example) for example in examples]
-                wandb.log({"examples": examples}, commit=False)
+        #     # model_cls = partial(
+        #     #     BatchStackedModel,
+        #     #     layer_cls=layer_cls,
+        #     #     d_output=n_classes,
+        #     #     classification=classification,
+        #     #     **model,
+        #     # )
+        #     samples, examples = sample_fn(
+        #         # run_id,
+        #         params=state.params,
+        #         model=model_cls(decode=True, training=False),
+        #         rng=rng,
+        #         dataloader=testloader,
+        #         prefix=train.sample,
+        #         n_batches=1,
+        #         save=False,
+        #     )
+        #     if wandb is not None:
+        #         samples = [wandb.Image(sample) for sample in samples]
+        #         wandb.log({"samples": samples}, commit=False)
+        #         examples = [wandb.Image(example) for example in examples]
+        #         wandb.log({"examples": examples}, commit=False)
 
         if (classification and test_acc > best_acc) or (
             not classification and test_loss < best_loss
         ):
             # Create new "best-{step}.ckpt and remove old one
-            if train.checkpoint:
-                shutil.copy(ckpt_path, f"{run_id}/best_{epoch}")
-                if os.path.exists(f"{run_id}/best_{best_epoch}"):
-                    os.remove(f"{run_id}/best_{best_epoch}")
+            # if train.checkpoint:
+            #     shutil.copy(ckpt_path, f"{run_id}/best_{epoch}")
+            #     if os.path.exists(f"{run_id}/best_{best_epoch}"):
+            #         os.remove(f"{run_id}/best_{best_epoch}")
 
             best_loss, best_acc, best_epoch = test_loss, test_acc, epoch
 
@@ -468,7 +470,12 @@ def example_train(
             wandb.run.summary["Best Test Loss"] = best_loss
             wandb.run.summary["Best Test Accuracy"] = best_acc
             wandb.run.summary["Best Epoch"] = best_epoch
+    if train.checkpoint:
+        ckpt = {'model': state,'params':state.params}
 
+        orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+        save_args = orbax_utils.save_args_from_target(ckpt)
+        orbax_checkpointer.save('checkpoints/orbax/single_save', ckpt, save_args=save_args)
 
 @hydra.main(version_base=None, config_path="", config_name="config")
 def main(cfg: DictConfig) -> None:
