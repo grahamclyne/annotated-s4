@@ -58,8 +58,8 @@ class VisionTransformer(nn.Module):
     num_channels : int = 4  # Number of channels of the input (3 for RGB)
     num_layers : int = 4   # Number of layers to use in the Transformer
     num_classes : int = 4 # Number of classes to predict
-    patch_size : int = 8   # Number of pixels that the patches have per dimension
-    num_patches : int = 215    # Maximum number of patches an image can have
+    patch_size : int = 2   # Number of pixels that the patches have per dimension
+    num_patches : int = 3455    # Maximum number of patches an image can have
     dropout_prob : float = 0.0  # Amount of dropout to apply in the feed-forward network
     img_size = [144,96]
     training: bool = True #TODO
@@ -72,15 +72,14 @@ class VisionTransformer(nn.Module):
                                            self.num_heads,
                                            self.dropout_prob) for _ in range(self.num_layers)]
         self.mlp_head = nn.Sequential([
-            nn.LayerNorm(),
             nn.Dense(self.num_classes * self.patch_size**2)
         ])
         self.dropout = nn.Dropout(self.dropout_prob)
 
         # Parameters/Embeddings
-        self.cls_token = self.param('cls_token',
-                                    nn.initializers.normal(stddev=1.0),
-                                    (1, 1, self.embed_dim))
+        # self.cls_token = self.param('cls_token',
+        #                             nn.initializers.normal(stddev=1.0),
+        #                             (1, 1, self.embed_dim))
         self.pos_embedding = self.param('pos_embedding',
                                         nn.initializers.normal(stddev=1.0),
                                         (1, 1+self.num_patches, self.embed_dim))
